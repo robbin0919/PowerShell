@@ -1,0 +1,19 @@
+# OemsService.API logs
+Oemsservice/Oemsservice.API/logs/
+
+# Python virtual environment
+venv/
+
+# Gemini Telemetry logs
+gemini_Telemetry_log/
+
+# jb_SyncOemsTicketConfirm build output
+Oemsservice/jb_SyncOemsTicketConfirm/bin/**
+Oemsservice/jb_SyncOemsTicketConfirm/obj/**
+
+# Temporary files
+Oemsservice/tmp001.csv
+Oemsservice/新增 Text Document.txt
+.gemini/
+\n# Ignore draw.io backup files
+*.bkp
