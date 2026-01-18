@@ -8,11 +8,11 @@
     .\Manage-Secrets.ps1
 #>
 
-# 設定模組路徑 (假設在同目錄下)
-$ModulePath = Join-Path $PSScriptRoot "CredentialManager.psm1"
+# 設定模組路徑 (移動至子目錄)
+$ModulePath = Join-Path $PSScriptRoot "Modules" | Join-Path -ChildPath "CredentialManager.psm1"
 
-# 設定全域憑證庫路徑 (請依需求修改此處，例如指向 C:\Ops\Secrets\Master.xml)
-$GlobalSecretPath = Join-Path $PSScriptRoot "Global_Credentials.xml"
+# 設定全域憑證庫路徑 (存放於 Data 子目錄)
+$GlobalSecretPath = Join-Path $PSScriptRoot "Data" | Join-Path -ChildPath "Global_Credentials.xml"
 
 # 載入模組
 if (-not (Test-Path $ModulePath)) {
@@ -22,7 +22,7 @@ if (-not (Test-Path $ModulePath)) {
 Import-Module $ModulePath -Force
 
 function Show-Menu {
-    Clear-Host
+    # Clear-Host  <-- 暫時移除以利除錯
     Write-Host "==========================================" -ForegroundColor Cyan
     Write-Host "    🔐 集中式憑證管理控制台 (Admin)" -ForegroundColor Cyan
     Write-Host "==========================================" -ForegroundColor Cyan
@@ -73,7 +73,13 @@ do {
             }
             Pause
         }
-        "Q" { Write-Host "Bye!" }
-        default { Write-Warning "無效的選擇" ; Start-Sleep -Seconds 1 }
+        "Q" { 
+            Write-Host "Bye!"
+            break 
+        }
+        default { 
+            Write-Warning "無效的選擇"
+            Start-Sleep -Seconds 1 
+        }
     }
 } until ($Choice -eq "Q")

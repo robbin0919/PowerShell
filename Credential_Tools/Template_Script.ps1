@@ -13,9 +13,9 @@ $SecretPath = Join-Path $ToolsDir "Global_Credentials.xml"
 $ModulePath = Join-Path $ToolsDir "CredentialManager.psm1"
 
 # --- 2. 載入憑證模組 ---
+# 假設模組位於工具目錄下的 Modules 子目錄
+$ModulePath = Join-Path $ToolsDir "Modules\CredentialManager.psm1"
 if (Test-Path $ModulePath) {
-    Import-Module $ModulePath -Force
-} else {
     Throw "找不到憑證模組，無法繼續執行。"
 }
 
