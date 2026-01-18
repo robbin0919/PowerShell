@@ -56,7 +56,19 @@
 *   **缺點**：
     *   **無法共用**：無法將檔案複製給其他同事或部署到另一台伺服器使用。
 
-### 方案三：整合企業級 Secret Management
+### 方案三：AES-256 加密憑證檔 (集中式管理)
+**✅ 推薦用於 跨伺服器、Docker 容器或 Linux 環境**
+
+本專案提供的 [**Credential_Tools**](./Credential_Tools/README.md) 即採用此方案。透過一組 Master Key (AES 金鑰) 來加密憑證庫。
+
+*   **優點**：
+    *   **跨平台支援**：金鑰與加密檔可隨腳本部署至 Linux 或 Docker 執行，不受 Windows 機器限制。
+    *   **管理便利**：單一憑證庫即可管理多組帳密，方便定期更新。
+    *   **稽核能力**：可記錄存取日誌，滿足合規要求。
+*   **缺點**：
+    *   **金鑰管理責任**：必須嚴格保護 `master.key` 檔案。若金鑰外洩，等同於所有密碼外洩。
+
+### 方案四：整合企業級 Secret Management
 **✅ 推薦用於大型企業環境**
 
 使用 Azure Key Vault, HashiCorp Vault 或 AWS Secrets Manager。
