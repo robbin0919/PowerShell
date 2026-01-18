@@ -22,7 +22,7 @@ if (-not (Test-Path $ModulePath)) {
 Import-Module $ModulePath -Force
 
 function Show-Menu {
-    # Clear-Host  <-- 暫時移除以利除錯
+    Clear-Host
     Write-Host "==========================================" -ForegroundColor Cyan
     Write-Host "    🔐 集中式憑證管理控制台 (Admin)" -ForegroundColor Cyan
     Write-Host "==========================================" -ForegroundColor Cyan

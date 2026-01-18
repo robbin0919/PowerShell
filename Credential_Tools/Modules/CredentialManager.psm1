@@ -1,17 +1,13 @@
 ﻿# PowerShell Module
-<#
-.SYNOPSIS
-    PowerShell 安全憑證管理模組
-.DESCRIPTION
-    此模組提供標準化的函式，用於建立、儲存與讀取加密的 PSCredential 物件。
-    使用 Windows DPAPI 進行保護，確保憑證僅能在授權的機器與使用者下解密。
-#>
+# -----------------------------------------------------------------------------
+# 模組名稱: CredentialManager
+# 功能描述: 支援 Windows DPAPI 與 AES 跨平台加密的憑證管理模組
+# -----------------------------------------------------------------------------
 
 # 定義路徑變數
 $ParentDir = Split-Path $PSScriptRoot -Parent
-# 預設憑證檔路徑
 $DefaultStorePath = Join-Path $ParentDir "Data" | Join-Path -ChildPath "Global_Credentials.xml"
-# 預設日誌檔路徑
+$DefaultKeyPath   = Join-Path $ParentDir "Data" | Join-Path -ChildPath "master.key"
 $DefaultLogPath   = Join-Path $ParentDir "Logs" | Join-Path -ChildPath "Credential_Audit.log"
 
 <#
@@ -25,131 +21,159 @@ function Write-CredentialLog {
         [string]$TargetKey = "N/A"
     )
     
-    # 確保日誌目錄存在
     $LogDir = Split-Path $DefaultLogPath -Parent
     if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory | Out-Null }
 
-    # 格式: [時間] [層級] [使用者] [Key] 訊息
     $Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $LogEntry = "[$Timestamp] [$Level] [$env:USERNAME] [$TargetKey] $Message"
-    
-    # 寫入檔案 (Append)
     Add-Content -Path $DefaultLogPath -Value $LogEntry -Encoding UTF8
     
-    # 同步輸出到 Console (選擇性)
-    if ($Level -eq "ERROR") { 
-        Write-Error $Message 
-    } elseif ($Level -eq "WARNING") { 
-        Write-Warning $Message 
-    } else {
-        # 一般訊息僅記錄不一定印出，或印出灰色
-        Write-Host "$Message" -ForegroundColor Gray
-    }
+    if ($Level -eq "ERROR") { Write-Error $Message }
+    elseif ($Level -eq "WARNING") { Write-Warning $Message }
+    else { Write-Host "$Message" -ForegroundColor Gray }
 }
 
 <#
 .SYNOPSIS
-    儲存或更新憑證 (Admin Use)
-.EXAMPLE
-    New-StoredCredential -Key "DatabaseProd" -StorePath "C:\Secured\Creds.xml"
+    (內部函式) 取得或初始化 AES Master Key
+    用於跨平台 (Linux/Docker) 加密支援
+#>
+function Get-MasterKey {
+    param([string]$KeyPath = $DefaultKeyPath)
+
+    # 1. 如果檔案存在，直接讀取
+    if (Test-Path $KeyPath) {
+        $Bytes = Get-Content -Path $KeyPath -Encoding Byte -ReadCount 0
+        if ($Bytes.Count -eq 32) {
+            return $Bytes
+        }
+        Write-CredentialLog -Message "Master Key 損毀或長度錯誤，將備份並重新產生。" -Level "WARNING"
+        Move-Item $KeyPath "$KeyPath.bak.$(Get-Date -Format 'yyyyMMddHHmmss')"
+    }
+
+    # 2. 檔案不存在，產生新的 32-byte AES Key
+    Write-CredentialLog -Message "正在產生新的 AES Master Key..." -Level "INFO"
+    $NewKey = New-Object Byte[] 32
+    [System.Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($NewKey)
+    
+    # 確保目錄存在
+    $Dir = Split-Path $KeyPath -Parent
+    if (-not (Test-Path $Dir)) { New-Item -Path $Dir -ItemType Directory | Out-Null }
+
+    # 寫入檔案
+    Set-Content -Path $KeyPath -Value $NewKey -Encoding Byte
+    
+    # 警告：這是最重要的檔案
+    Write-Warning "⚠️  已產生新的 Master Key: $KeyPath"
+    Write-Warning "    請務必備份此檔案！若遺失此 Key，所有憑證將無法解密。"
+    
+    return $NewKey
+}
+
+<#
+.SYNOPSIS
+    儲存或更新憑證 (支援 AES)
 #>
 function New-StoredCredential {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true, Position=0)]
         [string]$Key,
-
         [Parameter(Mandatory=$false)]
         [string]$StorePath = $DefaultStorePath,
-
         [Parameter(Mandatory=$false)]
         [string]$Description = ""
     )
 
     Write-CredentialLog -Message "準備更新憑證: $Key" -Level "INFO" -TargetKey $Key
 
-    # 1. 讀取現有檔案 (如果存在)
+    # 1. 取得 Master Key
+    try {
+        $AesKey = Get-MasterKey
+    } catch {
+        throw "無法取得 Master Key: $_"
+    }
+
+    # 2. 讀取現有檔案
     $Store = @{}
     if (Test-Path $StorePath) {
         try {
             $Store = Import-Clixml -Path $StorePath -ErrorAction Stop
         } catch {
-            Write-CredentialLog -Message "無法讀取現有檔案 ($StorePath): $_" -Level "WARNING" -TargetKey $Key
+            Write-CredentialLog -Message "無法讀取現有檔案，將建立新檔案。" -Level "WARNING" -TargetKey $Key
         }
     }
 
-    # 2. 取得新憑證
+    # 3. 取得使用者輸入的憑證
     $Cred = Get-Credential -Message "設定 [$Key] 的帳號密碼"
 
-    # 3. 更新記憶體中的儲存區
+    # 4. 加密密碼 (AES)
+    # 將 SecureString 轉為加密後的標準字串
+    $EncryptedPassword = $Cred.Password | ConvertFrom-SecureString -Key $AesKey
+
+    # 5. 更新儲存物件 (存的是 AES 加密字串，而非原始 Credential)
     $Store[$Key] = [PSCustomObject]@{
-        Credential  = $Cred
-        Description = $Description
-        UpdatedBy   = $env:USERNAME
-        UpdatedAt   = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        UserName          = $Cred.UserName
+        EncryptedPassword = $EncryptedPassword
+        EncryptionType    = "AES"
+        Description       = $Description
+        UpdatedBy         = $env:USERNAME
+        UpdatedAt         = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     }
 
-    # 4. 寫回檔案 (加密)
+    # 6. 寫回檔案
     try {
-        # 確保目錄存在
-        $Dir = Split-Path $StorePath -Parent
-        if (-not (Test-Path $Dir)) { New-Item -Path $Dir -ItemType Directory | Out-Null }
-
         $Store | Export-Clixml -Path $StorePath -Force
-        
-        Write-CredentialLog -Message "憑證更新成功。" -Level "INFO" -TargetKey $Key
+        Write-CredentialLog -Message "憑證更新成功 (AES)。" -Level "INFO" -TargetKey $Key
         Write-Host "✅ 憑證 [$Key] 已成功儲存至: $StorePath" -ForegroundColor Green
     } catch {
-        $ErrMsg = "寫入憑證檔失敗: $_"
-        Write-CredentialLog -Message $ErrMsg -Level "ERROR" -TargetKey $Key
-        throw $ErrMsg
+        throw "寫入憑證檔失敗: $_"
     }
 }
 
 <#
 .SYNOPSIS
-    讀取憑證 (Script Use)
-.EXAMPLE
-    $Cred = Get-StoredCredential -Key "DatabaseProd"
-    Connect-Db -Credential $Cred
+    讀取憑證 (支援 AES)
 #>
 function Get-StoredCredential {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true, Position=0)]
         [string]$Key,
-
         [Parameter(Mandatory=$false)]
         [string]$StorePath = $DefaultStorePath
     )
 
     if (-not (Test-Path $StorePath)) {
-        $Msg = "找不到憑證儲存檔: $StorePath"
-        Write-CredentialLog -Message $Msg -Level "ERROR" -TargetKey $Key
-        throw $Msg
+        throw "找不到憑證儲存檔: $StorePath"
     }
+
+    # 1. 取得 Master Key
+    $AesKey = Get-MasterKey
 
     try {
         $Store = Import-Clixml -Path $StorePath -ErrorAction Stop
         
         if ($Store.ContainsKey($Key)) {
             $Item = $Store[$Key]
-            
-            # 寫入稽核日誌 (記錄誰在什麼時候讀取了哪個Key)
             Write-CredentialLog -Message "憑證存取成功" -Level "INFO" -TargetKey $Key
 
-            # 相容性處理
+            # --- 舊版相容性檢查 ---
             if ($Item -is [System.Management.Automation.PSCredential]) {
+                # 這是舊版 DPAPI 格式，如果是在不同機器會失敗
                 return $Item
-            } elseif ($Item.PSObject.Properties['Credential']) {
-                return $Item.Credential
-            } else {
-                throw "儲存格式不符，無法讀取 [$Key]"
+            } 
+            elseif ($Item.EncryptionType -eq "AES") {
+                # --- 新版 AES 解密邏輯 ---
+                $SecurePass = $Item.EncryptedPassword | ConvertTo-SecureString -Key $AesKey
+                return New-Object System.Management.Automation.PSCredential ($Item.UserName, $SecurePass)
+            }
+            else {
+                # 既不是舊版也不是新版，可能格式損壞
+                throw "未知的憑證格式。"
             }
         } else {
-            $Msg = "找不到指定的 Key: [$Key]"
-            Write-CredentialLog -Message $Msg -Level "WARNING" -TargetKey $Key
-            throw $Msg
+            throw "找不到指定的 Key: [$Key]"
         }
     } catch {
         Write-CredentialLog -Message "存取失敗或解密錯誤: $_" -Level "ERROR" -TargetKey $Key
@@ -159,43 +183,34 @@ function Get-StoredCredential {
 
 <#
 .SYNOPSIS
-    列出所有可用憑證 Key (Info Use)
+    列出所有可用憑證 Key
 #>
 function Get-StoredCredentialList {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$false)]
         [string]$StorePath = $DefaultStorePath
     )
 
-    if (-not (Test-Path $StorePath)) {
-        Write-Warning "檔案不存在: $StorePath"
-        return
-    }
+    if (-not (Test-Path $StorePath)) { return }
 
     try {
         $Store = Import-Clixml -Path $StorePath -ErrorAction Stop
-        
-        # 列表操作通常不需每筆都 Log，只 Log 動作本身
         Write-CredentialLog -Message "執行憑證清單查詢" -Level "INFO"
 
         $Store.Keys | ForEach-Object {
             $Key = $_
             $Item = $Store[$Key]
             
-            if ($Item -is [System.Management.Automation.PSCredential]) {
+            # 統一輸出格式
+            if ($Item.EncryptionType -eq "AES") {
                 [PSCustomObject]@{
-                    Key = $Key
-                    User = $Item.UserName
-                    Updated = "N/A"
-                    Desc = "Legacy Format"
+                    Key = $Key; User = $Item.UserName; Updated = $Item.UpdatedAt; Desc = $Item.Description; Type = "AES"
                 }
             } else {
+                # 舊版格式處理
+                $User = if ($Item -is [System.Management.Automation.PSCredential]) { $Item.UserName } else { $Item.Credential.UserName }
                 [PSCustomObject]@{
-                    Key = $Key
-                    User = $Item.Credential.UserName
-                    Updated = $Item.UpdatedAt
-                    Desc = $Item.Description
+                    Key = $Key; User = $User; Updated = "Legacy"; Desc = "Old DPAPI"; Type = "DPAPI"
                 }
             }
         }
@@ -204,5 +219,4 @@ function Get-StoredCredentialList {
     }
 }
 
-# 匯出模組成員 (Write-CredentialLog 可視需求匯出或隱藏，此處匯出方便其他腳本也能寫入相關日誌)
 Export-ModuleMember -Function New-StoredCredential, Get-StoredCredential, Get-StoredCredentialList, Write-CredentialLog
