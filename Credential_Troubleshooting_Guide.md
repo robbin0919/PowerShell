@@ -75,9 +75,18 @@ public PSCredential DecryptWithPowerShell(string userName, string encryptedPass,
 ```
 
 #### 方式三：使用純 .NET SDK 解密 (進階/輕量化)
-若您的應用程式無法引用 PowerShell SDK，可手動解析 PowerShell 加密字串格式。
-*   **格式說明**：PowerShell 的加密字串由 `[16-byte IV]` + `[Cipher Text]` 組成，並以十六進位 (Hex) 儲存。
 
+**為什麼需要手動解析？**
+PowerShell 的 `ConvertTo-SecureString` 產出的加密字串並非單純的密文，而是一個包含 **IV (初始化向量)** 與 **Cipher Text (密文)** 的混合結構 (通常以 Hex 字串呈現)。若不使用 SDK，您必須自行「拆包」才能解密。
+
+| 特性 | PowerShell SDK (方式二) | 純 .NET SDK (方式三) |
+| :--- | :--- | :--- |
+| **依賴性** | 需引用 `Microsoft.PowerShell.SDK` (較重) | **零依賴** (內建於 System) |
+| **程式碼** | 極簡 (約 3 行) | 較繁瑣 (需自行處理 Hex/IV/Stream) |
+| **穩定性** | **高** (官方維護相容性) | **中** (若 PowerShell 內部格式變更需手動維護) |
+| **適用場景**| 快速開發、企業級應用 | 微服務、Lambda/Functions、極致輕量化 |
+
+**實作範例：**
 ```csharp
 using System.Security.Cryptography;
 using System.Text;
