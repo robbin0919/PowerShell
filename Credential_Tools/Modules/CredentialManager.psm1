@@ -126,9 +126,12 @@ function Get-CredentialStoreMode {
         }
 
         $Item = $Store[$FirstKey]
-        if ($Item.PSObject.Properties.Match("EncryptionType") -and $Item.EncryptionType -eq "AES") {
-            return "AES"
-        } elseif ($Item -is [System.Management.Automation.PSCredential]) {
+        if ($Item.PSObject.Properties.Match("EncryptionType")) {
+            if ($Item.EncryptionType -eq "AES") { return "AES" }
+            if ($Item.EncryptionType -eq "DPAPI") { return "DPAPI" }
+        }
+        
+        if ($Item -is [System.Management.Automation.PSCredential]) {
             return "DPAPI"
         } else {
             return "UNKNOWN"
@@ -258,7 +261,7 @@ function New-StoredCredential {
             throw
         }
         
-        # 儲存物件
+        # 儲存物件 (使用 Identity 與 Value 作為屬性名稱)
         $Store[$Key] = [PSCustomObject]@{
             Identity          = $Cred.UserName
             Value             = $EncryptedValue
@@ -268,13 +271,18 @@ function New-StoredCredential {
             UpdatedAt         = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
         }
     } else {
-        # --- DPAPI 模式 ---
-        $Cred.PSObject.TypeNames.Insert(0, "My.Stored.Credential")
-        $Cred | Add-Member -MemberType NoteProperty -Name "Description" -Value $Description -Force
-        $Cred | Add-Member -MemberType NoteProperty -Name "UpdatedBy" -Value $env:USERNAME -Force
-        $Cred | Add-Member -MemberType NoteProperty -Name "UpdatedAt" -Value (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") -Force
+        # --- DPAPI 模式 (Windows 專用) ---
+        # 重構：不再直接儲存 PSCredential，而是封裝成統一結構
+        # Export-Clixml 會自動加密屬性中的 SecureString (Value)
         
-        $Store[$Key] = $Cred
+        $Store[$Key] = [PSCustomObject]@{
+            Identity          = $Cred.UserName
+            Value             = $Cred.Password # 這是 SecureString
+            EncryptionType    = "DPAPI"
+            Description       = $Description
+            UpdatedBy         = $env:USERNAME
+            UpdatedAt         = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        }
     }
 
     # 5. 寫回檔案
@@ -333,8 +341,13 @@ function Get-StoredCredential {
                 $SecurePass = $EncryptedString | ConvertTo-SecureString -Key $AesKey
                 return New-Object System.Management.Automation.PSCredential ($UserIdentity, $SecurePass)
             } 
+            elseif ($Item.PSObject.Properties.Match("EncryptionType") -and $Item.EncryptionType -eq "DPAPI") {
+                # --- DPAPI 解密 (新版結構) ---
+                # Import-Clixml 已經自動解密了 SecureString (Value 屬性)
+                return New-Object System.Management.Automation.PSCredential ($Item.Identity, $Item.Value)
+            }
             elseif ($Item -is [System.Management.Automation.PSCredential]) {
-                # --- DPAPI 解密 (原生) ---
+                # --- DPAPI 解密 (舊版相容) ---
                 return $Item
             }
             else {
@@ -421,12 +434,17 @@ function Get-StoredCredentialList {
                 [PSCustomObject]@{
                     Key = $Key; Identity = $ShowUser; Updated = $Item.UpdatedAt; Desc = $Item.Description; Mode = "AES"
                 }
+            } elseif ($Item.PSObject.Properties.Match("EncryptionType") -and $Item.EncryptionType -eq "DPAPI") {
+                # DPAPI 新版結構
+                [PSCustomObject]@{
+                    Key = $Key; Identity = $Item.Identity; Updated = $Item.UpdatedAt; Desc = $Item.Description; Mode = "DPAPI"
+                }
             } else {
-                # DPAPI 模式 (嘗試讀取我們附加的屬性，若無則留空)
+                # DPAPI 舊版相容
                 $Desc = if ($Item.PSObject.Properties.Match("Description")) { $Item.Description } else { "" }
                 $Date = if ($Item.PSObject.Properties.Match("UpdatedAt")) { $Item.UpdatedAt } else { "" }
                 [PSCustomObject]@{
-                    Key = $Key; User = $Item.UserName; Updated = $Date; Desc = $Desc; Mode = "DPAPI"
+                    Key = $Key; Identity = $Item.UserName; Updated = $Date; Desc = $Desc; Mode = "DPAPI (Legacy)"
                 }
             }
         }
