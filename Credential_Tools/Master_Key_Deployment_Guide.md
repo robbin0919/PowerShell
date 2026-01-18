@@ -32,47 +32,84 @@
 ---
 
 ## 2. 環境變數模式 (Environment Variable)
-適用於：**CI/CD Pipeline** (GitLab CI, GitHub Actions)、**Serverless**。
+適用於：**CI/CD Pipeline** (GitLab CI, GitHub Actions)、**Serverless**、**Docker**。
 
-*注意：目前的 `CredentialManager.psm1` 預設讀取檔案。若需支援此模式，需修改 `Get-MasterKey` 邏輯以讀取 `$env:CREDENTIAL_MASTER_KEY`。*
+**本工具已原生支援此模式。** 程式會自動偵測名為 `PS_MASTER_KEY` 的環境變數。
 
 ### 步驟
-1.  **轉換 Key 為 Base64**:
-    在 Windows PowerShell 執行：
-    ```powershell
-    $Bytes = Get-Content "./Data/master.key" -Encoding Byte
-    [Convert]::ToBase64String($Bytes)
-    # 輸出範例: u8x/9sL... (複製這串字)
-    ```
+1.  **取得 Key**:
+    打開 `Data/master.key` 檔案，複製裡面的純文字內容 (已是 Base64 格式)。
+    *   範例內容: `u8x/9sL...`
 2.  **設定變數**:
-    在 CI/CD 設定中加入變數 `CREDENTIAL_MASTER_KEY`，值為剛才複製的 Base64 字串。
+    *   **Docker**: `docker run -e PS_MASTER_KEY="u8x/9sL..." my-image`
+    *   **K8s (Env)**: 使用 `valueFrom: secretKeyRef` 將 Secret 注入為環境變數。
+    *   **CI/CD**: 在專案設定中加入變數 `PS_MASTER_KEY`。
 
 ---
 
 ## 3. Kubernetes Secret 模式
 適用於：**Kubernetes (K8s)**、**OpenShift**。
 
-這是容器編排平台的標準作法，將 Key 視為機敏物件管理。
+首先，您需要先將 `master.key` 建立為 K8s Secret：
+```bash
+# 從檔案建立 Secret
+kubectl create secret generic ps-master-key --from-file=master.key=./Data/master.key
 
-### 步驟
-1.  **建立 Secret**:
-    ```bash
-    kubectl create secret generic ps-master-key \
-      --from-file=master.key=./Data/master.key
-    ```
-2.  **掛載至 Pod**:
-    在 Deployment YAML 中設定掛載點：
-    ```yaml
+# 或者，若要用環境變數模式，也可以直接給 Base64 字串
+# kubectl create secret generic ps-master-key --from-literal=PS_MASTER_KEY="u8x/9sL..."
+```
+
+### 方式 A：掛載成檔案 (Mount as File)
+適用於不想改動現有程式邏輯，讓程式去讀 `/app/Data/master.key`。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: automation-job-file
+spec:
+  containers:
+  - name: script-runner
+    image: my-automation-image
     volumeMounts:
-      - name: secret-volume
-        mountPath: "/app/Data/master.key"
-        subPath: "master.key"
-        readOnly: true
-    volumes:
-      - name: secret-volume
-        secret:
-          secretName: ps-master-key
-    ```
+    - name: secret-vol
+      mountPath: "/app/Data/master.key"  # 掛載目標路徑
+      subPath: "master.key"              # 只掛載單一檔案
+      readOnly: true
+  volumes:
+  - name: secret-vol
+    secret:
+      secretName: ps-master-key
+```
+
+### 方式 B：注入成環境變數 (Inject as Env Var)
+適用於 CI/CD 或現代化部署，程式會直接讀取 `$env:PS_MASTER_KEY`。**這是最推薦的雲端原生做法。**
+
+**前置作業**：建立 Secret 時，建議 Key 名稱設為 `PS_MASTER_KEY` 或是使用 Base64 字串。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: automation-job-env
+spec:
+  containers:
+  - name: script-runner
+    image: my-automation-image
+    env:
+    - name: PS_MASTER_KEY  # 容器內的環境變數名稱
+      valueFrom:
+        secretKeyRef:
+          name: ps-master-key  # K8s Secret 物件名稱
+          key: master.key      # Secret 裡的 Key (如果用 from-file 建立，預設是檔名)
+    # 注意：K8s Secret 存的是 Base64，但注入 Env 時會解碼回原始值。
+    # 由於我們的 master.key 原始值就是 "Base64字串"，所以注入到環境變數後
+    # 依然是那個 Base64 字串，程式可以直接讀取，非常安全。
+```
+
+#### 💡 關於方式 B 的補充
+由於現在 `master.key` 預設已儲存為 Base64 純文字格式，您不需要擔心二進位編碼問題。
+直接使用 `kubectl create secret generic ps-master-key --from-file=master.key=./Data/master.key` 即可完美運作。
 ---
 
 ## ⚠️ 安全檢查清單

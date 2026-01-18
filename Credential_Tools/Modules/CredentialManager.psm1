@@ -41,31 +41,55 @@ function Write-CredentialLog {
 function Get-MasterKey {
     param([string]$KeyPath = $DefaultKeyPath)
 
-    # 1. 如果檔案存在，直接讀取
-    if (Test-Path $KeyPath) {
-        $Bytes = Get-Content -Path $KeyPath -Encoding Byte -ReadCount 0
-        if ($Bytes.Count -eq 32) {
-            return $Bytes
+    # 1. 優先檢查環境變數 (適合 Docker / CI-CD)
+    if (-not [string]::IsNullOrEmpty($env:PS_MASTER_KEY)) {
+        try {
+            $Bytes = [Convert]::FromBase64String($env:PS_MASTER_KEY)
+            if ($Bytes.Count -eq 32) {
+                return $Bytes
+            }
+        } catch {
+            Write-CredentialLog -Message "環境變數 PS_MASTER_KEY 格式錯誤 (應為 Base64)。" -Level "WARNING"
         }
-        Write-CredentialLog -Message "Master Key 損毀或長度錯誤，將備份並重新產生。" -Level "WARNING"
+    }
+
+    # 2. 檔案讀取 (改為讀取 Base64 文字檔)
+    if (Test-Path $KeyPath) {
+        try {
+            # 嘗試以純文字讀取 (去除頭尾空白/換行)
+            $Content = Get-Content -Path $KeyPath -Raw -ErrorAction Stop
+            $Content = $Content.Trim()
+            
+            $Bytes = [Convert]::FromBase64String($Content)
+            if ($Bytes.Count -eq 32) {
+                return $Bytes
+            }
+        } catch {
+            Write-CredentialLog -Message "Master Key 檔案格式錯誤 (應為 Base64 字串)。" -Level "WARNING"
+        }
+        
+        # 若讀取失敗 (格式不符或損毀)，備份舊檔並準備重新產生
+        Write-CredentialLog -Message "Master Key 無法使用，將備份並重新產生。" -Level "WARNING"
         Move-Item $KeyPath "$KeyPath.bak.$(Get-Date -Format 'yyyyMMddHHmmss')"
     }
 
-    # 2. 檔案不存在，產生新的 32-byte AES Key
-    Write-CredentialLog -Message "正在產生新的 AES Master Key..." -Level "INFO"
+    # 3. 檔案不存在，產生新的 (存為 Base64 文字)
+    Write-CredentialLog -Message "正在產生新的 AES Master Key (Base64)..." -Level "INFO"
     $NewKey = New-Object Byte[] 32
     [System.Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($NewKey)
+    
+    # 轉為 Base64 字串
+    $Base64String = [Convert]::ToBase64String($NewKey)
     
     # 確保目錄存在
     $Dir = Split-Path $KeyPath -Parent
     if (-not (Test-Path $Dir)) { New-Item -Path $Dir -ItemType Directory | Out-Null }
 
-    # 寫入檔案
-    Set-Content -Path $KeyPath -Value $NewKey -Encoding Byte
+    # 寫入檔案 (使用 ASCII 避免 BOM 問題，方便 Linux cat/copy)
+    Set-Content -Path $KeyPath -Value $Base64String -Encoding Ascii -NoNewline
     
-    # 警告：這是最重要的檔案
     Write-Warning "⚠️  已產生新的 Master Key: $KeyPath"
-    Write-Warning "    請務必備份此檔案！若遺失此 Key，所有憑證將無法解密。"
+    Write-Warning "    格式: Base64 純文字檔 (方便複製與部署)"
     
     return $NewKey
 }
