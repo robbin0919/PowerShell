@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     PowerShell 安全憑證管理模組
 .DESCRIPTION

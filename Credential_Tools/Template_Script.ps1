@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     業務腳本範本 (Client Script Template)
 .DESCRIPTION

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     集中式憑證管理工具 (CLI)
 .DESCRIPTION
