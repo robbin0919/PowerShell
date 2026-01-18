@@ -43,26 +43,70 @@ PowerShell 產生的 Clixml 檔案可被 C# 應用程式讀取，但無法使用
 2.  **SDK 引用**：專案需安裝 NuGet 套件 `Microsoft.PowerShell.SDK` 或引用 `System.Management.Automation.dll`。
 
 ### 程式碼範例 (C#)
+
+當憑證庫升級為 AES 模式時，C# 應用程式必須配合以下邏輯：
+
+#### 1. 讀取 Base64 格式的 Master Key
+由於 `master.key` 現在是 Base64 純文字，讀取方式如下：
 ```csharp
-using System.Management.Automation; // 需引用此命名空間
+string base64Key = File.ReadAllText("master.key").Trim();
+byte[] aesKey = Convert.FromBase64String(base64Key);
+```
 
-public void LoadCredentials(string xmlPath)
+#### 2. 解密 AES 憑證 (推薦做法)
+強烈建議使用 **PowerShell SDK** 進行解密，以避免自行實作 AES 演算法時與 PowerShell `ConvertTo-SecureString` 的內部格式不相容。
+
+```csharp
+using System.Management.Automation;
+
+public PSCredential DecryptWithPowerShell(string userName, string encryptedPass, byte[] aesKey)
 {
-    // 使用 PowerShell 專用的還原序列化器
-    // 注意：此行會觸發 DPAPI 解密，若身分不符將會拋出例外
-    var deserializedObj = PSSerializer.Deserialize(xmlPath);
-
-    if (deserializedObj is System.Collections.Hashtable credStore)
+    using (PowerShell ps = PowerShell.Create())
     {
-        foreach (System.Collections.DictionaryEntry entry in credStore)
+        // 傳遞 Key 並呼叫 PowerShell 指令進行還原
+        ps.AddCommand("ConvertTo-SecureString")
+          .AddParameter("String", encryptedPass)
+          .AddParameter("Key", aesKey);
+        
+        var securePass = ps.Invoke<System.Security.SecureString>()[0];
+        return new PSCredential(userName, securePass);
+    }
+}
+```
+
+#### 方式三：使用純 .NET SDK 解密 (進階/輕量化)
+若您的應用程式無法引用 PowerShell SDK，可手動解析 PowerShell 加密字串格式。
+*   **格式說明**：PowerShell 的加密字串由 `[16-byte IV]` + `[Cipher Text]` 組成，並以十六進位 (Hex) 儲存。
+
+```csharp
+using System.Security.Cryptography;
+using System.Text;
+
+public string DecryptPureDotNet(string hexString, byte[] masterKey)
+{
+    // 1. 將 Hex 轉為 Byte[]
+    byte[] fullData = Enumerable.Range(0, hexString.Length / 2)
+                        .Select(x => Convert.ToByte(hexString.Substring(x * 2, 2), 16))
+                        .ToArray();
+
+    // 2. 拆分 IV (前 16 bytes) 與 密文
+    byte[] iv = fullData.Take(16).ToArray();
+    byte[] cipherText = fullData.Skip(16).ToArray();
+
+    // 3. 標準 AES 解密
+    using (Aes aes = Aes.Create())
+    {
+        aes.Key = masterKey;
+        aes.IV = iv;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.PKCS7;
+
+        using (var decryptor = aes.CreateDecryptor())
+        using (var ms = new MemoryStream(cipherText))
+        using (var cs = new CryptoStream(ms, decryptor, CryptoStreamMode.Read))
+        using (var sr = new StreamReader(cs, Encoding.Unicode)) // UTF-16LE
         {
-            var key = entry.Key.ToString();
-            var cred = entry.Value as PSCredential;
-            
-            // 取得明文密碼
-            string password = cred.GetNetworkCredential().Password;
-            
-            Console.WriteLine($"標籤: {key}, 帳號: {cred.UserName}");
+            return sr.ReadToEnd();
         }
     }
 }
@@ -71,4 +115,5 @@ public void LoadCredentials(string xmlPath)
 ### 最佳實務
 若您的專案混合了 PowerShell 腳本與 C# 程式：
 *   建議統一由 PowerShell 負責產製憑證檔 (`Export-Clixml`)。
-*   C# 端透過 `PSSerializer` 讀取，以確保安全性與格式一致。
+*   C# 端讀取 `master.key` 時請注意去除空白。
+*   解密邏輯應優先調用 PowerShell SDK，以確保 100% 的相容性與安全性。
