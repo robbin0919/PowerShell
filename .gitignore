@@ -1,11 +1,28 @@
-# OemsService.API logs
-Oemsservice/Oemsservice.API/logs/
+# --- Security & Sensitive Data ---
+# PowerShell Credentials & Secret Files
+*.xml
+*.creds
+*_aes.txt
+creds.txt
 
+# Private Keys and Certificates
+*.key
+*.pem
+*.ppk
+*.pfx
+*.p12
+*.cer
+*.crt
+*.secret
+
+# Logs
+*.log
+Oemsservice/Oemsservice.API/logs/
+gemini_Telemetry_log/
+
+# --- Environment & Build ---
 # Python virtual environment
 venv/
-
-# Gemini Telemetry logs
-gemini_Telemetry_log/
 
 # jb_SyncOemsTicketConfirm build output
 Oemsservice/jb_SyncOemsTicketConfirm/bin/**
@@ -15,5 +32,6 @@ Oemsservice/jb_SyncOemsTicketConfirm/obj/**
 Oemsservice/tmp001.csv
 Oemsservice/新增 Text Document.txt
 .gemini/
-\n# Ignore draw.io backup files
+
+# Ignore draw.io backup files
 *.bkp
