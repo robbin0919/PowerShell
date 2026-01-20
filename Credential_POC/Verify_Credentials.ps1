@@ -11,7 +11,7 @@
 #>
 
 param(
-    [string]$Path = "$HOME/My_Secured_Creds.xml"
+    [string]$Path = (Join-Path $HOME "My_Secured_Creds.xml")
 )
 
 Write-Host "=== 啟動排程模擬 (憑證驗證) ===" -ForegroundColor Cyan

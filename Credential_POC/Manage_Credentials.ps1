@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     管理憑證庫 (查詢與更新)
 .DESCRIPTION
@@ -13,7 +13,7 @@
 #>
 
 param(
-    [string]$Path = "$HOME/My_Secured_Creds.xml",
+    [string]$Path = (Join-Path $HOME "My_Secured_Creds.xml"),
     
     [ValidateSet("List", "Upsert")]
     [string]$Action = "List",

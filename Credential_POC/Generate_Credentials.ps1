@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     建立並加密憑證檔案 (POC 產生器)
 .DESCRIPTION
@@ -13,7 +13,7 @@
 #>
 
 param(
-    [string]$Path = "$HOME/My_Secured_Creds.xml",
+    [string]$Path = (Join-Path $HOME "My_Secured_Creds.xml"),
     
     [ValidateSet("Interactive", "Simulated")]
     [string]$Mode = "Interactive"
