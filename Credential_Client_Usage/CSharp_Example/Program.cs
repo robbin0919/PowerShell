@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
@@ -65,17 +66,7 @@ namespace CredentialClient
 
             try
             {
-                // 1. 讀取 Master Key
-                if (!File.Exists(masterKeyPath))
-                {
-                    Console.WriteLine($"Error: Master key file not found at: {masterKeyPath}");
-                     return;
-                }
-                
-                string keyBase64 = File.ReadAllText(masterKeyPath).Trim();
-                byte[] masterKey = Convert.FromBase64String(keyBase64);
-
-                // 2. 讀取並解析 XML 取得加密資料
+                // 1. 讀取並解析 XML 取得加密資料
                 var credential = CredentialStore.GetCredential("MyService", storePath);
 
                 if (credential == null)
@@ -85,9 +76,43 @@ namespace CredentialClient
                 }
 
                 Console.WriteLine($"\nFound Credential for User: {credential.UserName}");
+                Console.WriteLine($"Encryption Type: {credential.EncryptionType}");
 
-                // 3. 解密密碼
-                string plainPassword = PowerShellDecryptor.Decrypt(credential.EncryptedPassword, masterKey);
+                string plainPassword = "";
+
+                // 2. 根據加密類型選擇解密方式
+                if (credential.EncryptionType == "AES")
+                {
+                    // --- AES 模式 (跨平台) ---
+                    if (!File.Exists(masterKeyPath))
+                    {
+                        Console.WriteLine($"Error: Master key file not found at: {masterKeyPath}");
+                        return;
+                    }
+
+                    string keyBase64 = File.ReadAllText(masterKeyPath).Trim();
+                    byte[] masterKey = Convert.FromBase64String(keyBase64);
+                    plainPassword = PowerShellDecryptor.Decrypt(credential.EncryptedPassword, masterKey);
+                }
+                else if (credential.EncryptionType == "DPAPI" || credential.EncryptionType == "DPAPI (Legacy)")
+                {
+                    // --- DPAPI 模式 (Windows 限定) ---
+                    if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                    {
+                        plainPassword = DPAPIDecryptor.Decrypt(credential.EncryptedPassword);
+                    }
+                    else
+                    {
+                        Console.WriteLine("Error: DPAPI decryption is only supported on Windows.");
+                        Console.WriteLine("Please use AES mode for cross-platform support.");
+                        return;
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"Error: Unknown encryption type '{credential.EncryptionType}'.");
+                    return;
+                }
                 
                 Console.WriteLine($"Decrypted Password: {plainPassword}");
                 // 模擬使用
@@ -120,47 +145,36 @@ namespace CredentialClient
     {
         public string UserName { get; set; } = "";
         public string EncryptedPassword { get; set; } = "";
-        public string EncryptionType { get; set; } = "";
+        public string EncryptionType { get; set; } = "DPAPI (Legacy)"; // Default for old files
     }
 
     public static class CredentialStore
     {
         public static CredentialItem? GetCredential(string keyName, string xmlPath)
         {
-            // 解析 PowerShell Export-Clixml 產生的 Hashtable
-            // 結構: <Objs><Obj><DCT><En> ... Entries ... </En></DCT></Obj></Objs>
-            // 每個 Entry: <S N="Key">TheKeyName</S> <Obj N="Value">TheContent</Obj>
-            
             XDocument doc = XDocument.Load(xmlPath);
-            
-            // 找到 Hashtable 的 Entries
             var entries = doc.Descendants("En");
 
             foreach (var entry in entries)
             {
-                // 檢查 Key
                 var keyElement = entry.Elements("S").FirstOrDefault(e => e.Attribute("N")?.Value == "Key");
                 if (keyElement != null && keyElement.Value == keyName)
                 {
-                    // 找到對應的 Value 物件
                     var valueObj = entry.Elements("Obj").FirstOrDefault(e => e.Attribute("N")?.Value == "Value");
                     if (valueObj != null)
                     {
-                        // 解析 PSCustomObject 的屬性 (MS -> S)
                         var props = valueObj.Descendants("MS").FirstOrDefault();
                         if (props != null)
                         {
                             var item = new CredentialItem();
                             
-                            // 讀取屬性: Identity, Value, EncryptionType
-                            // 注意: 屬性可能在 <S> (String) 標籤中
                             foreach (var prop in props.Elements())
                             {
                                 string name = prop.Attribute("N")?.Value ?? "";
                                 string val = prop.Value;
 
-                                if (name == "Identity") item.UserName = val;
-                                else if (name == "UserName") item.UserName = val; // 相容性
+                                // 支援 <S> (String) 與 <SS> (SecureString) 標籤
+                                if (name == "Identity" || name == "UserName") item.UserName = val;
                                 else if (name == "Value") item.EncryptedPassword = val;
                                 else if (name == "EncryptionType") item.EncryptionType = val;
                             }
@@ -175,30 +189,18 @@ namespace CredentialClient
 
     public static class PowerShellDecryptor
     {
-        /// <summary>
-        /// 解密 PowerShell ConvertFrom-SecureString -Key 的輸出字串
-        /// </summary>
+        // AES Decryption Logic (Same as before)
         public static string Decrypt(string encryptedBase64, byte[] key)
         {
             if (string.IsNullOrEmpty(encryptedBase64)) throw new ArgumentException("Encrypted string is empty");
-
-            // 1. Base64 Decode -> Bytes
             byte[] rawBytes = Convert.FromBase64String(encryptedBase64);
-
-            // 2. Bytes -> Unicode String -> Split by '|'
-            // Format: Header | EncryptedData(Base64) | IV(Base64)
             string combinedString = Encoding.Unicode.GetString(rawBytes);
             string[] parts = combinedString.Split('|');
 
-            if (parts.Length != 3)
-            {
-                throw new FormatException("Invalid encrypted string format. Expected 3 parts separated by '|'.");
-            }
+            if (parts.Length != 3) throw new FormatException("Invalid encrypted string format.");
 
-            // part[0] is Header/Signature (skip)
             string cipherBase64 = parts[1];
             string ivBase64 = parts[2];
-
             byte[] cipherBytes = Convert.FromBase64String(cipherBase64);
             byte[] ivBytes = Convert.FromBase64String(ivBase64);
 
@@ -217,6 +219,32 @@ namespace CredentialClient
                     return reader.ReadToEnd();
                 }
             }
+        }
+    }
+
+    public static class DPAPIDecryptor
+    {
+        /// <summary>
+        /// 使用 Windows DPAPI 解密 (僅限 Windows 且需為相同使用者)
+        /// </summary>
+        public static string Decrypt(string encryptedBase64)
+        {
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                throw new PlatformNotSupportedException("DPAPI is only supported on Windows.");
+            }
+
+            if (string.IsNullOrEmpty(encryptedBase64)) throw new ArgumentException("Encrypted string is empty");
+
+            // PowerShell Export-Clixml 的 <SS> 標籤內容是 Base64 編碼的 DPAPI Blob
+            byte[] encryptedBytes = Convert.FromBase64String(encryptedBase64);
+
+            // 使用 CurrentUser 範圍進行解密
+            // 注意: 這需要執行身分與加密身分完全一致
+            byte[] plainBytes = ProtectedData.Unprotect(encryptedBytes, null, DataProtectionScope.CurrentUser);
+
+            // SecureString 在 PowerShell 中通常是以 Unicode 編碼儲存
+            return Encoding.Unicode.GetString(plainBytes);
         }
     }
 }
